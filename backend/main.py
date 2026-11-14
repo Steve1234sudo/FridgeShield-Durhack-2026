@@ -33,7 +33,7 @@ class InvestigateRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"ok": True, "model": os.getenv("LLM_MODEL") or "no model set in .env"}
+    return {"ok": True, "model": os.getenv("GEMINI_MODEL") or "no model set in .env"}
 
 
 @app.post("/investigate")
