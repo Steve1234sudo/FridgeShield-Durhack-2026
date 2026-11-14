@@ -21,6 +21,9 @@ import {
   ShieldAlert, ShieldCheck, Send, Bot, Clapperboard,
 } from "lucide-react";
 
+// Where the Python backend runs. Start it from the backend folder with: uvicorn main:app --reload
+const API_URL = "http://localhost:8000";
+
 /* ------------------------------------------------------------------ */
 /* Store layout                                                        */
 /* ------------------------------------------------------------------ */
@@ -375,7 +378,7 @@ const SCRIPT = {
 /* ------------------------------------------------------------------ */
 
 function investigate(sim, question, selected) {
-  const m = question.match(/f\s?([1-8])/i);
+  const m = question.match(FRIDGE_REF);
   const id = m ? `F${m[1]}` : selected;
   if (!m && /rescue|plan|move|space|food/i.test(question)) return planAnswer(sim);
   return fridgeAnswer(sim, id);
@@ -419,6 +422,50 @@ function planAnswer(sim) {
     parts.push(`${p.shortfall} L has nowhere to go yet${sim.partitioned ? " because fridges on the other side of the partition haven't heard the request" : ""}.`);
   parts.push("Approve the plan to move the stock, and check moved items against your food safety rules.");
   return { text: parts.join(" "), basis: `Based on ${p.offers} offers known to ${p.for}` };
+}
+
+/* ------------------------------------------------------------------ */
+/* Real investigator: what gets sent to the backend                    */
+/* ------------------------------------------------------------------ */
+
+const FRIDGE_REF = /\bf(?:ridge)?\s?([1-8])\b/i;
+
+// Which fridge a question is about: one it names, the fridge needing rescue, or the selected one.
+function targetFridge(sim, question, selected) {
+  const m = question.match(FRIDGE_REF);
+  if (m) return `F${m[1]}`;
+  if (/rescue|plan|move|space|food/i.test(question) && sim.plan) return sim.plan.for;
+  return selected;
+}
+
+// The situation packet: the facts the LLM is allowed to reason over. When the backend runs the
+// simulation, it should build this itself instead of the browser.
+function buildPacket(sim, id) {
+  const f = sim.fridges[id];
+  const events = sim.events
+    .filter((e) => sim.known[id].has(e.id))
+    .slice(-15)
+    .map((e) => ({ id: e.id, time: fmtTime(e.t), from: e.origin, kind: e.kind, about: e.subject, text: e.text }));
+  return {
+    store_time: fmtTime(sim.t),
+    fridge: {
+      id, section: f.section, target_c: f.target,
+      sensor_reading_c: +f.reported.toFixed(1),
+      power_draw_estimate_c: +f.estimate.toFixed(1),
+      compressor_on: f.compressor, door_open: f.door,
+      stock_litres: f.stock, capacity_litres: f.capacity,
+      health: f.health, security: f.security, network: f.connectivity, rescue: f.rescue,
+    },
+    how_other_fridges_rate_it: {
+      status: trustCategory(sim, id),
+      scores: Object.fromEntries(IDS.filter((o) => o !== id).map((o) => [o, +sim.trust[o][id].toFixed(2)])),
+    },
+    neighbours_it_can_reach: neighbours(sim, id),
+    network_partitioned: sim.partitioned,
+    central_management_online: sim.centralOnline,
+    rescue_plan: sim.plan,
+    events,
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -706,27 +753,96 @@ function EventFeed({ sim, selected, showTruth, mode, setMode }) {
   );
 }
 
-function Investigator({ chat, draft, setDraft, ask, selected }) {
+const LIKELIHOOD_TONE = { high: "text-red-300", medium: "text-amber-300", low: "text-slate-400" };
+const PRE = "mt-1 max-h-60 overflow-auto whitespace-pre-wrap rounded bg-slate-950 p-2 text-slate-300";
+
+function LlmAnswer({ m }) {
+  const d = m.diagnosis;
+  const section = (title, items) => items?.length > 0 && (
+    <div className="mt-2">
+      <p className="mb-1 text-xs text-slate-400">{title}</p>
+      <ul className="list-disc space-y-0.5 pl-5">{items.map((x, i) => <li key={i}>{x}</li>)}</ul>
+    </div>
+  );
+  return (
+    <div className="text-sm leading-relaxed text-slate-200">
+      {d ? (
+        <>
+          <p>{d.summary}</p>
+          {d.hypotheses?.length > 0 && (
+            <div className="mt-2">
+              <p className="mb-1 text-xs text-slate-400">Possible causes</p>
+              <ul className="space-y-1.5">
+                {d.hypotheses.map((h, i) => (
+                  <li key={i} className="rounded-lg bg-slate-800 px-3 py-2">
+                    <div className="flex justify-between gap-3">
+                      <span>{h.cause}</span>
+                      <span className={`shrink-0 ${LIKELIHOOD_TONE[h.likelihood] || "text-slate-400"}`}>{h.likelihood}</span>
+                    </div>
+                    {(h.supporting_events?.length > 0 || h.contradicting_events?.length > 0) && (
+                      <p className="mt-1 text-xs text-slate-500">
+                        {h.supporting_events?.length > 0 && `Supported by events ${h.supporting_events.join(", ")}. `}
+                        {h.contradicting_events?.length > 0 && `Contradicted by events ${h.contradicting_events.join(", ")}.`}
+                      </p>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {section("Recommended actions", d.recommended_actions)}
+          {section("Still unknown", d.unknowns)}
+        </>
+      ) : (
+        <p className="text-red-300">{m.error}</p>
+      )}
+      {m.invalid_citations?.length > 0 && (
+        <p className="mt-2 text-xs text-amber-300">Cited events that don't exist: {m.invalid_citations.join(", ")}</p>
+      )}
+      <p className="mt-1 text-xs text-slate-500">{m.model || "Model"} answered in {(m.latency_ms / 1000).toFixed(1)} s</p>
+      <details className="mt-2 rounded-lg border border-slate-800 px-3 py-2 text-xs">
+        <summary className="cursor-pointer text-slate-400 hover:text-slate-200">See prompt and raw response</summary>
+        <p className="mt-2 text-slate-400">Raw reply from the model</p>
+        <pre className={PRE}>{m.raw || "(empty)"}</pre>
+        <p className="mt-2 text-slate-400">Question and situation sent</p>
+        <pre className={PRE}>{m.prompt?.user}</pre>
+        <p className="mt-2 text-slate-400">System prompt</p>
+        <pre className={PRE}>{m.prompt?.system}</pre>
+      </details>
+    </div>
+  );
+}
+
+function Investigator({ chat, draft, setDraft, ask, selected, pending, backend }) {
   const endRef = useRef(null);
-  useEffect(() => { endRef.current?.scrollIntoView({ block: "nearest" }); }, [chat.length]);
+  useEffect(() => { endRef.current?.scrollIntoView({ block: "nearest" }); }, [chat.length, pending]);
   const presets = [`What's wrong with ${selected}?`, "Why is F3 not trusted?", "What's the rescue plan?"];
+  const status = backend === null
+    ? "Looking for the backend…"
+    : backend
+      ? `Connected to the backend, using ${backend.model}`
+      : "Backend not running, so answers are mock. Start it with uvicorn main:app --reload.";
   return (
     <div className="flex h-full flex-col">
       <div className="mb-1 flex items-center gap-2">
         <Bot className="h-5 w-5 text-sky-400" />
         <h2 className="font-semibold">AI investigator</h2>
       </div>
-      <p className="mb-3 text-xs text-slate-500">Mock answers for now. Replace investigate() with your LLM call.</p>
-      <div className="max-h-64 flex-1 space-y-3 overflow-y-auto pr-1">
+      <p className={`mb-3 text-xs ${backend ? "text-emerald-400" : "text-slate-500"}`}>{status}</p>
+      <div className="max-h-96 flex-1 space-y-3 overflow-y-auto pr-1">
         {chat.length === 0 && <p className="text-sm text-slate-400">Ask about any fridge, or about the rescue plan.</p>}
         {chat.map((m, i) => m.role === "user" ? (
           <div key={i} className="ml-auto max-w-xs rounded-lg bg-slate-800 px-3 py-2 text-sm">{m.text}</div>
+        ) : m.source === "llm" ? (
+          <LlmAnswer key={i} m={m} />
         ) : (
           <div key={i} className="text-sm leading-relaxed text-slate-200">
             {m.text}
             <div className="mt-1 text-xs text-slate-500">{m.basis}</div>
+            {m.error && <div className="mt-1 text-xs text-amber-300">{m.error}</div>}
           </div>
         ))}
+        {pending && <p className="animate-pulse text-sm text-slate-400">Investigating…</p>}
         <div ref={endRef} />
       </div>
       <div className="mt-3 flex flex-wrap gap-1.5">
@@ -806,6 +922,12 @@ export default function FridgeShieldDashboard() {
   const [feedMode, setFeedMode] = useState("all");
   const [chat, setChat] = useState([]);
   const [draft, setDraft] = useState("");
+  const [pending, setPending] = useState(false);
+  const [backend, setBackend] = useState(null); // null = checking, false = offline, object = online
+
+  useEffect(() => {
+    fetch(`${API_URL}/health`).then((r) => r.json()).then(setBackend).catch(() => setBackend(false));
+  }, []);
 
   const refresh = () => setVersion((v) => v + 1);
   useEffect(() => {
@@ -816,11 +938,31 @@ export default function FridgeShieldDashboard() {
 
   const act = (fn) => { fn(simRef.current); refresh(); };
   const restart = (script) => { simRef.current = createSim(script); setChat([]); setRunning(true); refresh(); };
-  const ask = (q) => {
-    if (!q.trim()) return;
-    const answer = investigate(simRef.current, q, selected);
-    setChat((c) => [...c, { role: "user", text: q }, { role: "ai", ...answer }]);
+  const ask = async (q) => {
+    if (!q.trim() || pending) return;
+    const s = simRef.current;
+    const packet = buildPacket(s, targetFridge(s, q, selected));
     setDraft("");
+    setChat((c) => [...c, { role: "user", text: q }]);
+    setPending(true);
+    try {
+      const res = await fetch(`${API_URL}/investigate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: q, packet }),
+      });
+      if (!res.ok) throw new Error(`the backend replied with status ${res.status}`);
+      const data = await res.json();
+      setBackend({ ok: true, model: data.model });
+      setChat((c) => [...c, { role: "ai", source: "llm", ...data }]);
+    } catch (err) {
+      setBackend(false);
+      const mock = investigate(s, q, selected);
+      setChat((c) => [...c, { role: "ai", source: "mock", ...mock,
+        error: `Couldn't reach the backend (${err.message}), so this is a mock answer.` }]);
+    } finally {
+      setPending(false);
+    }
   };
 
   const sim = simRef.current;
@@ -896,7 +1038,8 @@ export default function FridgeShieldDashboard() {
             <EventFeed sim={sim} selected={selected} showTruth={showTruth} mode={feedMode} setMode={setFeedMode} />
           </section>
           <section className={card}>
-            <Investigator chat={chat} draft={draft} setDraft={setDraft} ask={ask} selected={selected} />
+            <Investigator chat={chat} draft={draft} setDraft={setDraft} ask={ask} selected={selected}
+              pending={pending} backend={backend} />
           </section>
           <section className={card}>
             <RescuePanel sim={sim} onApprove={() => act(approvePlan)} />
