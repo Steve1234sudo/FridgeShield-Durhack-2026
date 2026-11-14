@@ -1,5 +1,5 @@
-import FridgeShieldDashboard from "./FridgeShieldDashboard";
+import LiveDashboard from "./LiveDashboard";
 
 export default function App() {
-  return <FridgeShieldDashboard />;
+  return <LiveDashboard />;
 }
