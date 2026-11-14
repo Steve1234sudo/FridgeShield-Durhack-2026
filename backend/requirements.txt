@@ -3,3 +3,7 @@ uvicorn[standard]
 pydantic
 google-genai
 python-dotenv
+websockets>=15,<16
+cryptography>=44,<47
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
