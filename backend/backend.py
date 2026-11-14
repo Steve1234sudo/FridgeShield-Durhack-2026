@@ -13,7 +13,7 @@ Run:
     pip install fastapi "uvicorn[standard]"
     # Optional for real Ed25519 signatures (falls back to SHA-256 HMAC if omitted):
     pip install cryptography
-    uvicorn backend:app --reload --port 8000
+    python -m backend  # from the repository root
 """
 
 from __future__ import annotations
