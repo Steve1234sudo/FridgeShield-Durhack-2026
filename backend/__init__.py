@@ -1,0 +1,1 @@
+"""FridgeShield backend package."""

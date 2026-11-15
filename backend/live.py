@@ -10,10 +10,12 @@ import sys
 import time
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 
 from .distributed import Discovery, SOCKET_OPTIONS, read, send
+from .investigator_api import router as investigator_router
 
 
 def free_port():
@@ -131,7 +133,14 @@ async def lifespan(app):
             await gateway.stop()
 
 
-app = FastAPI(title="FridgeShield Live Gateway", lifespan=lifespan)
+app = FastAPI(title="FridgeShield Backend", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.getenv("FRIDGE_UI_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(","),
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.include_router(investigator_router)
 
 
 @app.get("/api/state")

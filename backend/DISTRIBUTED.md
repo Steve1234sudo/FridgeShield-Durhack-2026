@@ -21,7 +21,7 @@ environment (or your chosen Python environment):
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -r backend/requirements-distributed.txt
+python -m pip install -r backend/requirements.txt
 ```
 
 Activate that environment in each terminal. Start discovery in terminal 1:

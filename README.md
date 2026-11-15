@@ -5,14 +5,23 @@
 From the repository root, in a Python 3.11+ environment:
 
 ```powershell
-python -m pip install -r backend/requirements-distributed.txt
-python -m backend.live
+.\backend\.venv\Scripts\Activate.ps1
+python -m pip install -r backend/requirements.txt
+python -m backend.main
 ```
 
 This starts the dashboard gateway on `127.0.0.1:8000`, discovery on port 9000,
 and four independent fridge processes. Each fridge simulates its own sensors,
 runs the shared thermal/Kalman models and exchanges signed events directly with
 its neighbours over WebSockets.
+
+One server also exposes `GET /health` and `POST /investigate` for the Gemini
+investigator, alongside `GET /api/state` and the dashboard WebSocket `/ws`.
+Configure `GEMINI_API_KEY` and `GEMINI_MODEL` in `backend/.env` to use Gemini;
+the live dashboard can start without them. API documentation is at
+http://localhost:8000/docs. `python -m backend.live` still starts the same app;
+run only one entry point at a time. From inside `backend/`, the alternative
+`uvicorn main:app --reload` also serves this combined application.
 
 In a second terminal:
 
@@ -47,7 +56,7 @@ For protocol details, manual node commands, and current demo limits, see
 ## Checks
 
 ```powershell
-python -m unittest backend.test_distributed backend.test_live -v
+python -m unittest backend.test_distributed backend.test_edge backend.test_live backend.test_unified -v
 cd frontend
 npm run build
 ```

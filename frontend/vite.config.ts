@@ -10,6 +10,8 @@ export default defineConfig({
     proxy: {
       "/ws": { target: "ws://127.0.0.1:8000", ws: true },
       "/api": { target: "http://127.0.0.1:8000" },
+      "/health": { target: "http://127.0.0.1:8000" },
+      "/investigate": { target: "http://127.0.0.1:8000" },
     },
   },
 });
