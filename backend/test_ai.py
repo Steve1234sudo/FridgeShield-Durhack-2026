@@ -1,6 +1,7 @@
 """Fast checks for the AI integration. No Gemini calls and no fridge processes."""
 import os
 os.environ["FRIDGE_USE_DATA"] = "0"  # these tests check the simulator; test_data.py covers real data
+import asyncio
 import json
 import os
 import unittest
@@ -168,6 +169,42 @@ class NeighbourTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([(h["fridge"], h["direct"], h["after_ms"]) for h in item["heard_by"]],
                          [("F3", True, 100), ("F4", False, 300)])
         self.assertEqual(item["replies"][0]["fridge"], "F3")
+
+
+class DelayedFixTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.applied = []
+
+        async def fetch(fid):
+            return STATE
+
+        async def ask(question, packet):
+            return {"diagnosis": {"actions": [{"command": "close_door", "reason": "r"}]}, "error": None}
+
+        async def act(fid, actions):
+            self.applied.append(fid)
+            return [{**a, "ok": True, "applied": True} for a in actions]
+
+        self.watcher = IncidentWatcher(fetch, ask=ask, act=act)
+
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "x", "AI_MIN_GAP": "0", "AI_FIX_DELAY": "0.05"})
+    async def test_fix_waits_then_applies(self):
+        self.watcher.observe({"F2": STATE})
+        incident = await self.watcher.step()
+        self.assertTrue(incident["actions_taken"][0]["pending"])
+        self.assertEqual(self.applied, [])
+        await asyncio.sleep(0.1)
+        self.assertEqual(self.applied, ["F2"])
+        self.assertTrue(incident["actions_taken"][0]["applied"])
+
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "x", "AI_MIN_GAP": "0", "AI_FIX_DELAY": "0.05"})
+    async def test_fix_skipped_if_already_sorted(self):
+        self.watcher.observe({"F2": STATE})
+        incident = await self.watcher.step()
+        self.watcher.observe({"F2": {"local": {"security": "normal"}}})  # fixed some other way
+        await asyncio.sleep(0.1)
+        self.assertEqual(self.applied, [])
+        self.assertIn("No longer needed", incident["actions_taken"][0]["message"])
 
 
 class TopologyTest(unittest.TestCase):

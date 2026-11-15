@@ -29,16 +29,31 @@ const ACTION_LABEL = {
   restore_target: "Restored the safe target temperature",
 };
 
+const ACTION_PLAN = {
+  close_door: "Close the door",
+  protective_mode: "Switch to protective mode",
+  restore_target: "Restore the safe target temperature",
+};
+
 function ActionsTaken({ actions }) {
   if (!actions?.length) return null;
   return (
     <ul className="mt-2 space-y-1">
-      {actions.map((a, i) => (
-        <li key={i} className={`rounded-lg border px-3 py-1.5 text-xs ${a.applied ? "border-emerald-700 text-emerald-300" : "border-amber-700 text-amber-300"}`}>
-          <span className="font-medium">{a.applied ? "Done: " : "Not applied: "}{ACTION_LABEL[a.command] || a.command}.</span>{" "}
-          <span className="text-slate-400">{a.applied ? a.reason : a.message}</span>
-        </li>
-      ))}
+      {actions.map((a, i) => {
+        // A pending fix counts down (AI_FIX_DELAY on the backend); the stream refreshes it.
+        const seconds = a.pending ? Math.max(0, Math.ceil(a.applies_at - Date.now() / 1000)) : 0;
+        const tone = a.applied ? "border-emerald-700 text-emerald-300"
+          : a.pending ? "border-sky-700 text-sky-300" : "border-amber-700 text-amber-300";
+        return (
+          <li key={i} className={`rounded-lg border px-3 py-1.5 text-xs ${tone}`}>
+            <span className="font-medium">
+              {a.pending ? `Fixing in ${seconds}s: ${ACTION_PLAN[a.command] || a.command}`
+                : `${a.applied ? "Done: " : "Not applied: "}${ACTION_LABEL[a.command] || a.command}`}.
+            </span>{" "}
+            <span className="text-slate-400">{a.applied || a.pending ? a.reason : a.message}</span>
+          </li>
+        );
+      })}
     </ul>
   );
 }

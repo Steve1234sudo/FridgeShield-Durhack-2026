@@ -15,6 +15,8 @@ TARGET_OVERRIDE_OFFSET = 9
 # safe setting plus this margin (8°C for a 3°C fridge, the UK chilled limit), the fridge
 # restores its own safe target. Again: no network and no AI needed.
 SAFE_MARGIN_C = 5
+# ...or, if it's still above that limit after this many minutes overridden (not in a defrost).
+OVERRIDE_PATIENCE_MINUTES = int(os.getenv("OVERRIDE_PATIENCE_MINUTES", "20"))
 
 # Safe fixes that may be requested remotely (by the AI or staff). The fridge still
 # carries each one out itself and logs it as a signed event.
@@ -57,6 +59,8 @@ class EdgeController:
         self.forced_protective = False
         self.target_was_overridden = False
         self.restored_by_action = False
+        self.override_low = None  # lowest temperature since the target was overridden
+        self.override_minutes = 0
 
     @property
     def target_overridden(self):
@@ -195,7 +199,13 @@ class EdgeController:
             self.was_door_open = False
             self.outbox.append({"action": "auto_close_door",
                                 "reason": f"Door open {DOOR_AUTO_CLOSE_MINUTES} minutes, so the fridge closed it itself"})
-        if overridden and estimate >= self.safe_target + SAFE_MARGIN_C - 0.5:  # act before the limit
+        self.override_low = (min(self.override_low, estimate) if self.override_low is not None else estimate) \
+            if overridden else None
+        self.override_minutes = self.override_minutes + 1 if overridden else 0
+        # Act before the limit for warming the override caused (not a planned defrost, nor warmth
+        # that was already there), or if it's stayed above the limit for too long either way.
+        if (overridden and not defrost and estimate >= self.safe_target + SAFE_MARGIN_C - 0.5
+                and (estimate >= self.override_low + 2 or self.override_minutes >= OVERRIDE_PATIENCE_MINUTES)):
             p.target = self.safe_target
             self.restored_by_action = True
             self.outbox.append({"action": "auto_restore_target",

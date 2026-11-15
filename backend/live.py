@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -52,7 +53,8 @@ class Gateway:
             process = subprocess.Popen(
                 [sys.executable, "-m", "backend.distributed", "node", "--id", fid,
                  "--port", str(port), "--discovery", f"ws://127.0.0.1:{self.discovery_port}", "--simulate"],
-                cwd=Path(__file__).resolve().parents[1], env=os.environ.copy(),
+                cwd=Path(__file__).resolve().parents[1], env={**os.environ, "FRIDGE_EXIT_WITH_PARENT": "1"},
+                stdin=subprocess.PIPE,  # the fridge exits when this pipe closes, i.e. when the server stops
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             self.children[fid] = process
@@ -110,7 +112,7 @@ class Gateway:
                 "unreachable": [fid for fid, state in results if state is None],
                 "links": edges, "topology": topology, "managed": list(self.children), "events": list(events.values())[-300:],
                 "source": "Distributed Python nodes · simulated sensors",
-                "feed": build_feed(nodes), "active_links": active_links(nodes),
+                "feed": build_feed(nodes), "active_links": active_links(nodes), "server_id": SERVER_ID,
                 "incidents": watcher.public()}
 
     async def command(self, message):
@@ -130,6 +132,9 @@ class Gateway:
 
 
 gateway = Gateway(int(os.getenv("FRIDGE_DISCOVERY_PORT", "9000")))
+# A new ID every time the server starts. The dashboard clears its own state (AI chat,
+# selection, messages) when it sees a new one, so each run starts from a clean slate.
+SERVER_ID = uuid.uuid4().hex[:8]
 
 
 async def fridge_view(fid):

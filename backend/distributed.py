@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import random
+import sys
 import time
 import uuid
 from urllib.parse import urlparse
@@ -449,6 +450,8 @@ async def main(args):
             LOG.info("Discovery listening on ws://%s:%s", args.host, args.port)
             await asyncio.Future()
     elif args.command == "node":
+        if os.getenv("FRIDGE_EXIT_WITH_PARENT") == "1":
+            exit_with_parent()
         endpoint = f"ws://{args.advertise_host or args.host}:{args.port}/peer"
         node = Fridge(args.id, endpoint, args.discovery)
         if args.simulate:
@@ -461,6 +464,23 @@ async def main(args):
                 "type": "emit", "kind": args.kind, "data": json.loads(args.data)}
             await send(ws, msg)
             print(json.dumps(read(await ws.recv()), indent=2))
+
+
+def exit_with_parent():
+    """Exit when the server that started us stops, even if it crashed or its window was closed.
+
+    The server keeps a pipe open to our stdin; when the server dies the pipe closes and the
+    read returns. This stops old fridges (with old logs) joining the next server session.
+    """
+    import threading
+
+    def watch():
+        try:
+            sys.stdin.read()
+        finally:
+            os._exit(0)
+
+    threading.Thread(target=watch, daemon=True).start()
 
 
 def cli():

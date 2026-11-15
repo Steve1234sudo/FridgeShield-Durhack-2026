@@ -48,6 +48,19 @@ export default function LiveDashboard() {
   const [busy, setBusy] = useState(false);
   const [truth, setTruth] = useState(false);
   const [soundOn, setSoundOn] = useState(false);
+  // Every server start has a new ID. When it changes, start from a clean slate: the AI chat
+  // (remounted via its key below), the selected fridge and any messages are all cleared.
+  const serverId = data?.server_id;
+  const lastServer = useRef(null);
+  useEffect(() => {
+    if (!serverId) return;
+    if (lastServer.current && lastServer.current !== serverId) {
+      setSelected(null);
+      setError("");
+      setNotice("New server session: logs and AI chat cleared.");
+    }
+    lastServer.current = serverId;
+  }, [serverId]);
   // The soundscape follows the fridges: every update may retune a voice.
   useEffect(() => { updateSoundscape(Object.values(data?.nodes || {})); }, [data]);
   useEffect(() => () => stopSoundscape(), []);
@@ -128,11 +141,6 @@ export default function LiveDashboard() {
       {!online && <div role="status" className={`${panel} border-amber-800 text-amber-200`}>Waiting for backend. Start <code>python -m backend.live</code> from the repository root. {data && "Displayed readings are stale until reconnection."}</div>}
       {error && <div role="alert" className="rounded-lg bg-red-950 p-3 text-red-200">{error}</div>}
       {notice && <p role="status" className="text-sm text-sky-300">{notice}</p>}
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-        {[ ["Active fridges", nodes.length], ["Direct peer links", data?.links.length || 0],
-          ["Need attention", nodes.filter(needsAttention).length],
-          ["Unreachable", data?.unreachable.length || 0] ].map(([label, value]) => <div className={panel} key={label}><p className="text-sm text-slate-400">{label}</p><p className="mt-2 text-3xl font-semibold">{value}</p></div>)}
-      </div>
       <div className="grid gap-5 lg:grid-cols-2">
         <section className={panel}>
           <h2 className="text-lg font-medium">Neighbour network</h2><p className="text-sm text-slate-400">Lines show actual connected WebSocket peers. Select a fridge.</p>
@@ -183,7 +191,7 @@ export default function LiveDashboard() {
         </section>
       </div>
       <div className="grid gap-5 lg:grid-cols-2">
-        <AiInvestigator fridgeId={chosen?.id} incidents={data?.incidents} />
+        <AiInvestigator key={serverId || "waiting"} fridgeId={chosen?.id} incidents={data?.incidents} />
         <NetworkFeed feed={data?.feed} />
       </div>
       {data && <p className="text-xs text-slate-500">Last backend snapshot: {new Date(data.timestamp * 1000).toLocaleTimeString()}</p>}

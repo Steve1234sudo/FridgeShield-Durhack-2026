@@ -23,7 +23,9 @@ from pathlib import Path
 
 DATA_DIR = Path(os.getenv("FRIDGE_DATA_DIR", Path(__file__).resolve().parent / "data"))
 FILE_COUNT = 33
-WARMING_RATE = 0.07  # share of the remaining gap closed each tick while cooling is disrupted
+# Share of the remaining gap closed each tick while cooling is disrupted. Lower it to make
+# attacks warm the fridge more slowly (e.g. 0.03 for a demo, so the problem lasts longer).
+WARMING_RATE = float(os.getenv("FRIDGE_WARMING_RATE", "0.07"))
 COOLING_RATE = 0.88  # extra warming kept each tick once the cause is fixed
 DOOR_WARMING_C = 8.0
 NO_COOLING_WARMING_C = 9.0

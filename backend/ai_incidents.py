@@ -15,6 +15,10 @@ Set AI_AUTO_INCIDENTS=0 in backend/.env to switch it off entirely.
 If the AI asks for a fix (like closing a door), `act` sends it to the fridge, which
 checks it and carries it out itself. If the fridge can't be reached, its own local
 reflexes still handle the problem.
+
+AI_FIX_DELAY (seconds, default 0) makes the AI wait before applying an automatic fix, so in a
+demo the problem can be seen and heard for a while first. The dashboard shows a countdown.
+If the problem is fixed some other way in the meantime, the AI's fix is skipped.
 """
 import asyncio
 import logging
@@ -54,6 +58,7 @@ class IncidentWatcher:
         self.last_call_for = {}
         self.last_call = -math.inf
         self.incidents = []
+        self.tasks = set()  # delayed fixes waiting to be applied
 
     @property
     def enabled(self):
@@ -100,12 +105,29 @@ class IncidentWatcher:
                         f"what is most likely happening and what they should do now.")
             result = await self.ask(question, build_packet(state))
             actions = (result.get("diagnosis") or {}).get("actions") or []
-            if self.act and actions:
-                result["actions_taken"] = await self.act(fid, actions)
             incident = {"fridge_id": fid, "concern": what, "created_at": time.time(), "resolved_at": None, **result}
             self.incidents = (self.incidents + [incident])[-50:]
+            if self.act and actions:
+                delay = float(os.getenv("AI_FIX_DELAY", "0"))
+                if delay > 0:
+                    incident["actions_taken"] = [{**a, "pending": True, "applied": False, "ok": False,
+                                                  "applies_at": time.time() + delay} for a in actions]
+                    task = asyncio.create_task(self.apply_later(fid, actions, incident, delay))
+                    self.tasks.add(task)
+                    task.add_done_callback(self.tasks.discard)
+                else:
+                    incident["actions_taken"] = await self.act(fid, actions)
             return incident
         return None
+
+    async def apply_later(self, fid, actions, incident, delay):
+        await asyncio.sleep(delay)
+        if incident["resolved_at"] is not None:
+            # Already sorted, by the fridge's own reflexes or a member of staff.
+            incident["actions_taken"] = [{**a, "pending": False, "applied": False, "ok": False,
+                                          "message": "No longer needed: the problem was already fixed"} for a in actions]
+            return
+        incident["actions_taken"] = await self.act(fid, actions)
 
     async def run(self, fleet_nodes):
         while True:
