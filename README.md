@@ -31,7 +31,16 @@ npm install
 npm run dev
 ```
 
-Open **http://localhost:5173**. The frontend receives live backend snapshots;
+Open **http://localhost:5173**.
+Select a fridge and use the **AI investigator** panel below its details to ask
+about its current readings and known events. Questions go to `/investigate` on
+the combined backend; configure `GEMINI_API_KEY` and `GEMINI_MODEL` in
+`backend/.env` and restart the backend after changing them. AI responses are
+advisory and are labelled with the snapshot tick used for the question. The
+packet excludes hidden simulation temperatures and attack flags. Each cited
+event can be inspected in the panel's evidence section.
+
+The frontend receives live backend snapshots;
 it does not generate its own readings. Add/remove fridges, select nodes to see
 temperature history and peer connections, and inject door, wear or sensor faults.
 Rescue requests and capacity offers appear in the event feed. Offers are advisory,

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 import { ShieldCheck, Plus, Trash2, Zap, DoorOpen, Activity, Pause } from "lucide-react";
+import AiInvestigator from "./AiInvestigator";
 
 const button = "inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800 disabled:opacity-40";
 const panel = "rounded-xl border border-slate-800 bg-slate-900 p-5";
@@ -118,6 +119,7 @@ export default function LiveDashboard() {
           </>}
         </section>
       </div>
+      <AiInvestigator key={chosen?.session || "empty"} node={chosen} online={online} />
       <div className="grid gap-5 lg:grid-cols-2">
         <section className={panel}><h2 className="mb-3 text-lg font-medium">Gossip event feed</h2><p className="mb-3 text-xs text-slate-400">Signed events received from the backend. Routine telemetry is shown in the chart.</p>
           <div className="max-h-80 space-y-2 overflow-auto">{events.length ? events.map((e) => <div className="rounded bg-slate-800 p-3 text-sm" key={`${e.session}:${e.seq}`}><span className="font-medium text-sky-300">{e.origin}</span> · {e.kind}<p className="mt-1 break-words text-xs text-slate-400">{JSON.stringify(e.data)}</p></div>) : <p className="text-slate-400">No alerts or rescue events yet. Try opening a fridge door.</p>}</div>
