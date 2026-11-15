@@ -16,6 +16,11 @@ from websockets.asyncio.server import serve
 
 from .distributed import Discovery, SOCKET_OPTIONS, read, send
 from .investigator_api import router as investigator_router
+from pydantic import BaseModel
+
+from .ai_context import build_packet, mentioned_fridge
+from .ai_incidents import IncidentWatcher
+from .investigator import investigate
 
 
 def free_port():
@@ -100,7 +105,8 @@ class Gateway:
         return {"type": "state", "timestamp": time.time(), "nodes": nodes,
                 "unreachable": [fid for fid, state in results if state is None],
                 "links": edges, "managed": list(self.children), "events": list(events.values())[-300:],
-                "source": "Distributed Python nodes · simulated sensors"}
+                "source": "Distributed Python nodes · simulated sensors",
+                "incidents": watcher.public()}
 
     async def command(self, message):
         command = message.get("command")
@@ -121,15 +127,33 @@ class Gateway:
 gateway = Gateway(int(os.getenv("FRIDGE_DISCOVERY_PORT", "9000")))
 
 
+async def fridge_view(fid):
+    """Ask one fridge, over its own control socket, for everything it knows."""
+    return (await gateway.request(fid, {"type": "state", "compact": True}))["state"]
+
+
+async def fleet_nodes():
+    return (await gateway.snapshot())["nodes"]
+
+
+# Explains new problems automatically. Advisory only: it can't send fridges commands.
+watcher = IncidentWatcher(fridge_view)
+
+
 @asynccontextmanager
 async def lifespan(app):
     async with serve(gateway.discovery.handler, "127.0.0.1", gateway.discovery_port,
                      origins=[None], **SOCKET_OPTIONS):
+        watcher_task = None
         try:
             for _ in range(int(os.getenv("FRIDGE_COUNT", "4"))):
                 await gateway.add()
+            watcher_task = asyncio.create_task(watcher.run(fleet_nodes))
             yield
         finally:
+            if watcher_task:
+                watcher_task.cancel()
+                await asyncio.gather(watcher_task, return_exceptions=True)
             await gateway.stop()
 
 
@@ -141,6 +165,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(investigator_router)
+
+
+class AskRequest(BaseModel):
+    fridge_id: str
+    question: str
+
+
+@app.post("/api/ask")
+async def ask(req: AskRequest):
+    """Answer a staff question using one fridge's own view of the store.
+
+    If the question names another fridge ("is F5 really overheating?"), that fridge is asked.
+    """
+    fid = mentioned_fridge(req.question, gateway.discovery.members) or req.fridge_id
+    try:
+        state = await fridge_view(fid)
+    except Exception as exc:
+        return {"fridge_id": fid, "diagnosis": None, "invalid_citations": [], "raw": "", "prompt": None,
+                "model": os.getenv("GEMINI_MODEL", ""), "latency_ms": 0,
+                "error": f"Couldn't reach {fid} to ask what it knows ({exc}). The other fridges carry on as normal."}
+    return {"fridge_id": fid, **await investigate(req.question, build_packet(state))}
+
+
+@app.get("/api/incidents")
+def incidents():
+    """Recent automatic incident explanations, including the full prompts sent."""
+    return watcher.incidents[-20:]
 
 
 @app.get("/api/state")
