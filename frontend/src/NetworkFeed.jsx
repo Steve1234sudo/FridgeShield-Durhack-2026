@@ -35,9 +35,9 @@ function Relay({ item }) {
 export default function NetworkFeed({ feed = [] }) {
   const items = [...(feed || [])].reverse();
   return (
-    <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
-      <h2 className="font-semibold">What the fridges are telling each other</h2>
-      <p className="mb-3 text-xs text-slate-400">Sent directly between neighbouring fridges, with no central server.</p>
+    <section className="min-w-0 rounded-xl bg-slate-900 p-4 sm:p-5">
+      <h2 className="font-semibold">Network activity</h2>
+      <p className="mb-4 mt-1 text-xs text-slate-400">Messages exchanged directly between neighbours.</p>
       {items.length === 0 ? (
         <p className="text-sm text-slate-400">All quiet. Reports, decisions and advice between fridges will appear here.</p>
       ) : (
@@ -52,7 +52,7 @@ export default function NetworkFeed({ feed = [] }) {
                 </p>
                 {item.outcome && <p className="text-slate-300">{item.outcome}</p>}
                 {item.advice && <p className="text-sky-300">{item.advice}</p>}
-                <Relay item={item} />
+                {item.heard_by?.length > 0 && <details className="mt-1"><summary className="cursor-pointer text-xs text-slate-400">Delivery details</summary><Relay item={item} /></details>}
               </div>
             </li>
           ))}

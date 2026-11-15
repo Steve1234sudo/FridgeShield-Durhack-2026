@@ -5,8 +5,8 @@ import AiInvestigator from "./AiInvestigator";
 import NetworkFeed from "./NetworkFeed";
 import { startSoundscape, stopSoundscape, updateSoundscape } from "./soundscape";
 
-const button = "inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800 disabled:opacity-40";
-const panel = "rounded-xl border border-slate-800 bg-slate-900 p-5";
+const button = "inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40";
+const panel = "min-w-0 rounded-xl bg-slate-900 p-4 sm:p-5";
 const temperature = (value) => Number.isFinite(value) ? `${value.toFixed(1)}°C` : "—";
 
 // One colour per kind of problem, shared by the fridge on the map and the button that causes it.
@@ -32,7 +32,8 @@ function FridgeIcon({ node, x, y, selected }) {
   const { fill, line } = KINDS[problem(node)];
   const dash = node.isolated ? "5 4" : undefined;
   const shown = node.local?.security === "protective" ? node.local?.estimate : node.local?.reported;
-  const note = node.isolated ? "cut off" : node.local?.security === "protective" ? "protecting" : null;
+  const note = node.isolated ? "cut off" : node.local?.security === "protective" ? "protecting"
+    : problem(node) !== "normal" ? KINDS[problem(node)].label : null;
   return <>
     {selected && <rect x={left - 6} y={top - 6} width={W + 12} height={H + 12} rx="10" fill="none" stroke="#f8fafc" strokeWidth="1.5" />}
     {node.local?.door && <path d={`M ${left} ${top + 2} L ${left - 20} ${top + 9} L ${left - 20} ${top + H - 9} L ${left} ${top + H - 2} Z`}
@@ -58,6 +59,7 @@ const linkKey = (a, b) => [a, b].sort().join("|");
 
 export default function LiveDashboard() {
   const socket = useRef(null);
+  const commandTimer = useRef(null);
   const [data, setData] = useState(null);
   const [status, setStatus] = useState("connecting");
   const [selected, setSelected] = useState(null);
@@ -96,17 +98,19 @@ export default function LiveDashboard() {
       const url = import.meta.env.VITE_BACKEND_WS || `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
       active = new WebSocket(url);
       socket.current = active;
-      active.onopen = () => { setStatus("connected"); setError(""); };
+      active.onopen = () => { setStatus("syncing"); setError(""); };
       active.onmessage = ({ data: raw }) => {
         const msg = JSON.parse(raw);
         if (msg.type === "state") { setData(msg); setStatus("connected"); }
-        if (msg.type === "error") { setError(msg.message); setBusy(false); }
+        if (msg.type === "error") { clearTimeout(commandTimer.current); setError(msg.message); setBusy(false); }
         if (msg.type === "result") {
+          clearTimeout(commandTimer.current);
           setBusy(false);
           setNotice(msg.result.reason || (msg.result.id ? `Added ${msg.result.id}` : "Command delivered to backend"));
         }
       };
       active.onclose = () => {
+        clearTimeout(commandTimer.current);
         if (stopped) return;
         setStatus("disconnected"); setBusy(false);
         retry = setTimeout(open, 1500);
@@ -114,12 +118,17 @@ export default function LiveDashboard() {
       active.onerror = () => active.close();
     };
     open();
-    return () => { stopped = true; clearTimeout(retry); active?.close(); };
+    return () => { stopped = true; clearTimeout(retry); clearTimeout(commandTimer.current); active?.close(); };
   }, []);
 
   const command = (name, id) => {
     if (socket.current?.readyState !== WebSocket.OPEN) return;
     setError(""); setNotice(""); setBusy(true);
+    clearTimeout(commandTimer.current);
+    commandTimer.current = setTimeout(() => {
+      setBusy(false);
+      setError("No confirmation arrived from the backend. Check the live fridge state before retrying.");
+    }, 20000);
     socket.current.send(JSON.stringify({ command: name, id, requestId: crypto.randomUUID() }));
   };
   const nodes = Object.values(data?.nodes || {});
@@ -150,20 +159,18 @@ export default function LiveDashboard() {
       <header className="flex flex-wrap items-center gap-3">
         <ShieldCheck className="text-sky-400" /><h1 className="text-2xl font-semibold">FridgeShield</h1>
         <span className={`rounded-full px-3 py-1 text-xs ${online ? "bg-emerald-950 text-emerald-300" : "bg-amber-950 text-amber-300"}`}>{status}</span>
-        <button className={`${button} ml-auto`} onClick={toggleSound} aria-pressed={soundOn}
-          title="Each fridge plays a note in one chord. A fridge under attack goes out of tune.">
-          {soundOn ? <VolumeX size={16} /> : <Volume2 size={16} />}{soundOn ? "Mute soundscape" : "Play soundscape"}</button>
-        <button className={button} disabled={!online || busy} onClick={() => command("add")}><Plus size={16} />Add fridge</button>
+        <span className="text-sm text-slate-400">{nodes.length} {nodes.length === 1 ? "fridge" : "fridges"} · {nodes.filter((n) => problem(n) !== "normal" || n.local?.health === "failing").length} need attention</span>
+        <button className="ml-auto inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-sky-400 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-sky-300 disabled:cursor-not-allowed disabled:opacity-40" disabled={!online || busy} onClick={() => command("add")}><Plus size={16} />{busy ? "Working…" : "Add fridge"}</button>
       </header>
       {!online && <div role="status" className={`${panel} border-amber-800 text-amber-200`}>Waiting for backend. Start <code>python -m backend.live</code> from the repository root. {data && "Displayed readings are stale until reconnection."}</div>}
-      {error && <div role="alert" className="rounded-lg bg-red-950 p-3 text-red-200">{error}</div>}
-      {notice && <p role="status" className="text-sm text-sky-300">{notice}</p>}
+      {error && <div role="alert" className="break-words rounded-lg bg-red-950 p-3 text-red-200">{error}</div>}
+      {notice && <p role="status" className="break-words text-sm text-sky-300">{notice}</p>}
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
         <section className={panel}>
           <h2 className="text-lg font-medium">Store network</h2>
           <p className="text-sm text-slate-400">Click a fridge to inspect it.</p>
-          {nodes.length ? <svg className="max-h-[34rem] w-full" viewBox={`0 0 ${width} ${width}`} role="img" aria-label="Live fridge network">
-            {(data.topology || data.links).map(([a, b]) => {
+          {nodes.length ? <svg className="h-80 w-full sm:h-96" viewBox={`0 0 ${width} ${width}`} role="img" aria-label="Live fridge network">
+            {(data.topology || data.links || []).filter(([a, b]) => positions[a] && positions[b]).map(([a, b]) => {
               const up = liveLinks.has(linkKey(a, b)), talking = busyLinks.has(linkKey(a, b));
               return <line key={`${a}-${b}`} x1={positions[a].x} y1={positions[a].y} x2={positions[b].x} y2={positions[b].y}
                 stroke={!up ? "#ef4444" : talking ? "#38bdf8" : "#334155"} strokeWidth={talking ? 4 : 3}
@@ -172,19 +179,20 @@ export default function LiveDashboard() {
             {flows.map((l) => <circle key={`${l.from}>${l.to}`} cx={positions[l.from].x} cy={positions[l.from].y} r="6" className="fs-flow"
               fill={l.kind === "ack" ? "#34d399" : "#fbbf24"}
               style={{ "--dx": `${positions[l.to].x - positions[l.from].x}px`, "--dy": `${positions[l.to].y - positions[l.from].y}px` }} />)}
-            {nodes.map((node) => <g key={node.id} role="button" tabIndex={0} aria-label={`Select ${node.id}`} onClick={() => setSelected(node.id)} onKeyDown={(e) => { if (e.key === "Enter") setSelected(node.id); }} className="cursor-pointer">
+            {nodes.map((node) => <g key={node.id} role="button" tabIndex={0} aria-pressed={chosen?.id === node.id} aria-label={`Select ${node.id}`} onClick={() => setSelected(node.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelected(node.id); } }} className="cursor-pointer">
               <FridgeIcon node={node} x={positions[node.id].x} y={positions[node.id].y} selected={chosen?.id === node.id} />
             </g>)}
           </svg> : <p className="py-16 text-center text-slate-400">No fridges online. Add one to start.</p>}
+          <details className="mt-3 text-xs text-slate-400"><summary className="cursor-pointer">Map legend</summary>
           <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-300" aria-label="Legend">
             {Object.entries(KINDS).map(([key, k]) => <li key={key} className="flex items-center gap-1.5">
               <span className="inline-block h-3 w-3 rounded-sm border" style={{ background: k.fill, borderColor: k.line }} />{k.label}</li>)}
             <li className="flex items-center gap-1.5"><span className="inline-block h-2 w-2 rounded-full bg-amber-400" />Message between fridges</li>
-          </ul>
+          </ul></details>
         </section>
         <section className={panel}>
-          <div className="flex items-center justify-between"><h2 className="text-lg font-medium">{chosen ? `Fridge ${chosen.id}` : "Fridge details"}</h2>
-            {chosen && <button className={button} disabled={!online || busy || !data.managed.includes(chosen.id)} onClick={() => command("remove", chosen.id)}><Trash2 size={16} />Remove</button>}
+          <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="min-w-0 break-words text-lg font-medium">{chosen ? `Fridge ${chosen.id}` : "Fridge details"}</h2>
+            {chosen && <select aria-label="Select fridge" value={chosen.id} onChange={(e) => setSelected(e.target.value)} className="min-h-10 max-w-36 rounded-md border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm">{nodes.map((n) => <option key={n.id} value={n.id}>{n.id}</option>)}</select>}
           </div>
           {chosen && <>
             
@@ -194,19 +202,17 @@ export default function LiveDashboard() {
               {local.defrost && <p className="mt-3 rounded-lg bg-sky-950 p-3 text-sm text-sky-200">Defrost cycle: warming on purpose to clear ice. This is normal, not a fault.</p>}
               {local.target_overridden && <p className="mt-3 rounded-lg bg-rose-950 p-3 text-sm text-rose-200">Target overridden to {temperature(local.target)} (safe setting {temperature(local.safe_target)}), so it has stopped cooling. The AI will restore it; if it can't, the fridge restores it itself before passing {temperature(local.safe_target + 5)}.</p>}
               {local.spoofed && <p className="mt-3 rounded-lg bg-violet-950 p-3 text-sm text-violet-200">Spoofing is on: the sensor is stuck near {temperature(local.target - 1)}. {local.security === "protective" ? "The fridge has caught it and is cooling from its independent estimate." : "Watch the estimate pull away from the sensor."}</p>}
-              <div className="mt-4 grid grid-cols-2 gap-4">
+              <div className="mt-4 grid grid-cols-2 gap-4 tabular-nums">
                 <div><p className="text-sm text-slate-400">Sensor</p><p className="text-3xl font-semibold tabular-nums">{temperature(local.reported)}</p></div>
                 <div><p className="text-sm text-slate-400">Independent estimate</p><p className="text-3xl font-semibold tabular-nums">{temperature(local.estimate)}</p></div>
               </div>
               <dl className="mt-4 grid grid-cols-2 gap-x-6 text-sm">
                 {[["Target", local.target_overridden ? `${temperature(local.target)} (overridden)` : temperature(local.target)],
-                  ["Security", local.security], ["Compressor", local.compressor ? "on" : "off"], ["Door", local.door ? "open" : "closed"],
-                  ["Power", local.power_watts >= 1000 ? `${(local.power_watts / 1000).toFixed(1)} kW` : `${local.power_watts.toFixed(0)} W`],
-                  ["Neighbours", chosen.isolated ? "cut off" : chosen.neighbours.join(", ") || "none"]].map(([k, v]) =>
-                  <div className="flex justify-between gap-2 border-b border-slate-800 py-1.5" key={k}><dt className="text-slate-400">{k}</dt><dd>{v}</dd></div>)}
+                  ["Security", local.security], ["Compressor", local.compressor ? "on" : "off"], ["Door", local.door ? "open" : "closed"]].map(([k, v]) =>
+                  <div className="flex flex-wrap justify-between gap-2 border-b border-slate-800 py-1.5" key={k}><dt className="text-slate-400">{k}</dt><dd className="break-words">{v}</dd></div>)}
               </dl>
-              <div className="mt-4 h-44"><ResponsiveContainer width="100%" height="100%"><LineChart data={local.history}>
-                <XAxis dataKey="t" hide /><YAxis stroke="#94a3b8" width={32} domain={local.chart_range || ["auto", "auto"]} allowDataOverflow={!!local.chart_range}
+              <div className="mt-4 h-44 min-w-0"><ResponsiveContainer width="100%" height="100%" minWidth={0}><LineChart data={local.history} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+                <XAxis dataKey="t" hide /><YAxis stroke="#94a3b8" width={48} tick={{ fontSize: 11 }} domain={local.chart_range || ["auto", "auto"]} allowDataOverflow={!!local.chart_range}
                   ticks={chartTicks(local.chart_range)} tickFormatter={(v) => `${v}°`} />
                 <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155" }} labelFormatter={() => ""}
                   formatter={(v) => `${Number(v).toFixed(1)}°C`} />
@@ -218,9 +224,14 @@ export default function LiveDashboard() {
                 <span className="flex items-center gap-1.5"><span className="inline-block h-0.5 w-4 bg-sky-400" />Sensor</span>
                 <span className="flex items-center gap-1.5"><span className="inline-block h-0.5 w-4 bg-rose-400" />Estimate</span>
                 {truth && <span className="flex items-center gap-1.5"><span className="inline-block h-0.5 w-4 bg-fuchsia-400" />Real temperature</span>}
-                <label className="ml-auto flex items-center gap-1.5"><input type="checkbox" checked={truth} onChange={(e) => setTruth(e.target.checked)} />Show real temperature (simulation only)</label>
               </div>
-              <div className="mt-4 flex flex-wrap gap-2">{[
+              <details className="mt-4 border-t border-slate-800 pt-3 text-sm"><summary className="cursor-pointer text-slate-300">Monitoring details</summary>
+                <dl className="mt-3 space-y-2 text-sm"><div className="flex justify-between gap-4"><dt className="text-slate-400">Power</dt><dd>{Math.round(local.power_watts)} W</dd></div><div className="flex justify-between gap-4"><dt className="text-slate-400">Neighbours</dt><dd>{chosen.isolated ? "cut off" : chosen.neighbours.join(", ") || "none"}</dd></div></dl>
+                <label className="mt-3 flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" checked={truth} onChange={(e) => setTruth(e.target.checked)} />Show real temperature (simulation only)</label>
+                <button className={`${button} mt-3 text-xs`} onClick={toggleSound} aria-pressed={soundOn} title="Each fridge plays a note in one chord. A fridge under attack goes out of tune.">{soundOn ? <VolumeX size={14} /> : <Volume2 size={14} />}{soundOn ? "Mute soundscape" : "Play soundscape"}</button>
+              </details>
+              <details className="mt-3 border-t border-slate-800 pt-3 text-sm"><summary className="cursor-pointer text-slate-300">Simulation controls</summary>
+              <div className="mt-3 flex flex-wrap gap-2">{[
                 ["spoof_sensor", local.spoofed ? "Stop spoofing" : "Spoof sensor", Zap, "sensor", local.spoofed],
                 ["override_target", local.target_overridden ? "Undo target override" : "Override target", Thermometer, "target", local.target_overridden],
                 ["open_door", local.door ? "Close door" : "Open door", DoorOpen, "door", local.door],
@@ -228,6 +239,8 @@ export default function LiveDashboard() {
                 ["pause", local.paused ? "Resume" : "Pause", Pause, null, local.paused],
               ].map(([name, label, Icon, kind, on]) => <button key={name} disabled={!online || busy} onClick={() => command(name, chosen.id)} aria-pressed={!!on}
                 className={kind ? `${button} ${KINDS[kind].button} ${on ? KINDS[kind].on : ""}` : button}><Icon size={14} />{label}</button>)}</div>
+                <button className={`${button} mt-3 text-xs text-slate-400`} disabled={!online || busy || !data.managed.includes(chosen.id)} onClick={() => command("remove", chosen.id)}><Trash2 size={14} />Remove fridge</button>
+              </details>
             </> : <p className="py-10 text-slate-400">Waiting for telemetry. This node may have been started without --simulate.</p>}
           </>}
         </section>

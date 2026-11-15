@@ -1,1 +1,15 @@
 @import "tailwindcss";
+
+@layer base {
+  body { margin: 0; background: #020617; color: #f1f5f9; color-scheme: dark; }
+  button:not(:disabled), summary, select { cursor: pointer; }
+  :focus-visible { outline: 2px solid #38bdf8; outline-offset: 4px; }
+  input { caret-color: #38bdf8; }
+  ::selection { background: #164e63; color: #ecfeff; }
+  * { scrollbar-color: #475569 #0f172a; scrollbar-width: thin; }
+  summary { min-height: 36px; align-content: center; }
+  input, select { font: inherit; }
+  svg[role="img"] [role="button"]:focus-visible { outline: none; }
+  svg[role="img"] [role="button"]:focus-visible > rect:first-of-type { stroke: #38bdf8; stroke-width: 3px; }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; scroll-behavior: auto !important; } }
+}

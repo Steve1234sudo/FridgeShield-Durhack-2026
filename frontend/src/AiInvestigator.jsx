@@ -78,11 +78,11 @@ function Answer({ result }) {
           <p>{d.summary}</p>
           <ActionsTaken actions={result.actions_taken} />
           {d.hypotheses?.length > 0 && (
-            <div className="mt-2">
-              <p className="mb-1 text-xs text-slate-400">Possible causes</p>
-              <ul className="space-y-1.5">
+            <details className="mt-3">
+              <summary className="cursor-pointer text-xs text-slate-400">Possible causes ({d.hypotheses.length})</summary>
+              <ul className="mt-2 space-y-2">
                 {d.hypotheses.map((h, i) => (
-                  <li key={i} className="rounded-lg bg-slate-800 px-3 py-2">
+                  <li key={i} className="py-1">
                     <div className="flex justify-between gap-3">
                       <span>{h.cause}</span>
                       <span className={`shrink-0 ${LIKELIHOOD_TONE[h.likelihood] || "text-slate-400"}`}>{h.likelihood}</span>
@@ -90,10 +90,10 @@ function Answer({ result }) {
                   </li>
                 ))}
               </ul>
-            </div>
+            </details>
           )}
           <List title="What to do" items={d.recommended_actions} />
-          <List title="Still unknown" items={d.unknowns} />
+          {!!d.unknowns?.length && <details className="mt-3"><summary className="cursor-pointer text-xs text-slate-400">Still unknown ({d.unknowns.length})</summary><ul className="mt-2 list-disc space-y-1 pl-5">{d.unknowns.map((item, i) => <li key={i}>{item}</li>)}</ul></details>}
         </>
       ) : (
         <p className="text-red-300">{result.error || "No answer came back."}</p>
@@ -110,13 +110,13 @@ function Answer({ result }) {
 
 function IncidentCard({ incident }) {
   const resolved = incident.resolved_at != null;
+  if (resolved) return <details className="mb-4 border-b border-slate-800 pb-3"><summary className="cursor-pointer text-xs text-slate-400">Resolved: {incident.concern} · {clock(incident.resolved_at)}</summary><div className="mt-3"><Answer result={incident} /></div></details>;
   return (
-    <div className={`mb-3 rounded-lg border px-3 py-2.5 ${resolved ? "border-slate-700" : "border-amber-500"}`}>
+    <div className="mb-4 border-b border-amber-500/40 pb-3">
       <div className="mb-1.5 flex items-center justify-between gap-2 text-xs">
-        <span className={resolved ? "text-slate-400" : "font-medium text-amber-300"}>
+        <span className="font-medium text-amber-300">
           Automatic alert at {clock(incident.created_at)}: {incident.concern}
         </span>
-        {resolved && <span className="text-emerald-400">Resolved at {clock(incident.resolved_at)}</span>}
       </div>
       <Answer result={incident} />
     </div>
@@ -127,11 +127,17 @@ export default function AiInvestigator({ fridgeId, incidents = [], apiUrl = DEFA
   const [threads, setThreads] = useState({}); // one conversation per fridge
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
+  const [pendingFridge, setPendingFridge] = useState(null);
   const [online, setOnline] = useState(null); // null = checking, false = offline, string = model name
   const listRef = useRef(null); // the scrollable chat box
 
   useEffect(() => {
-    fetch(`${apiUrl}/health`).then((r) => r.json()).then((h) => setOnline(h.model)).catch(() => setOnline(false));
+    let current = true;
+    fetch(`${apiUrl}/health`, { signal: AbortSignal.timeout(8000) })
+      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then((h) => { if (current) setOnline(h.model && !h.model.startsWith("no model") ? h.model : false); })
+      .catch(() => { if (current) setOnline(false); });
+    return () => { current = false; };
   }, [apiUrl]);
 
   const thread = threads[fridgeId] || [];
@@ -151,37 +157,42 @@ export default function AiInvestigator({ fridgeId, incidents = [], apiUrl = DEFA
     setDraft("");
     add(id, { role: "user", text: question });
     setPending(true);
+    setPendingFridge(id);
     try {
       const res = await fetch(`${apiUrl}/api/ask`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ fridge_id: id, question }),
+        signal: AbortSignal.timeout(60000),
       });
       if (!res.ok) throw new Error(`status ${res.status}`);
       const result = await res.json();
-      setOnline(result.model || true);
+      setOnline(result.error ? false : result.model || true);
       add(id, { role: "ai", result });
     } catch (err) {
       setOnline(false);
-      add(id, { role: "ai", result: { error: `Couldn't reach the AI (${err.message}). The fridges keep running without it.` } });
+      add(id, { role: "ai", result: { error: err.name === "TimeoutError"
+        ? "The AI took too long to respond. Try again. The fridges keep protecting themselves."
+        : `Couldn't reach the AI (${err.message}). Check the backend connection and try again. The fridges keep running without it.` } });
     } finally {
       setPending(false);
+      setPendingFridge(null);
     }
   };
 
   const presets = [`What's wrong with ${fridgeId}?`, `Can we trust ${fridgeId}'s sensor?`, "What should staff do now?"];
   const status = online === null ? "Checking for the AI…"
-    : online ? `Connected, using ${online}`
+    : online ? (typeof online === "string" ? `Model: ${online}` : "AI responded")
     : "AI offline. The fridges keep protecting themselves without it.";
 
   return (
-    <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
-      <div className="mb-1 flex items-center gap-2">
+    <section className="min-w-0 rounded-xl bg-slate-900 p-4 sm:p-5">
+      <div className="mb-1 flex flex-wrap items-center gap-2">
         <Bot className="h-5 w-5 text-sky-400" />
         <h2 className="font-semibold">AI investigator{fridgeId ? `: ${fridgeId}` : ""}</h2>
         <div className="ml-auto"><IncidentReport fridgeId={fridgeId} apiUrl={apiUrl} /></div>
       </div>
-      <p className={`mb-3 text-xs ${online ? "text-emerald-400" : "text-slate-400"}`}>{status}</p>
+      <p className={`mb-3 break-words text-xs ${online ? "text-emerald-400" : "text-slate-400"}`}>{status}</p>
 
       {!fridgeId ? (
         <p className="text-sm text-slate-400">Select a fridge to ask about it.</p>
@@ -189,7 +200,7 @@ export default function AiInvestigator({ fridgeId, incidents = [], apiUrl = DEFA
         <>
           {incident && <IncidentCard incident={incident} />}
 
-          <div ref={listRef} className="max-h-96 space-y-3 overflow-y-auto pr-1">
+          <div ref={listRef} className="max-h-96 space-y-3 overflow-y-auto pr-1 break-words" aria-live="polite" aria-busy={pending}>
             {thread.length === 0 && !incident && (
               <p className="text-sm text-slate-400">Ask about {fridgeId}. The AI sees what {fridgeId} itself knows.</p>
             )}
@@ -203,23 +214,23 @@ export default function AiInvestigator({ fridgeId, incidents = [], apiUrl = DEFA
                 <Answer result={m.result} />
               </div>
             ))}
-            {pending && <p className="animate-pulse text-sm text-slate-400">Asking {fridgeId} what it knows…</p>}
+            {pending && <p className="text-sm text-slate-400" role="status">Asking {pendingFridge} what it knows…</p>}
           </div>
 
-          <div className="mt-3 flex flex-wrap gap-1.5">
+          <details className="mt-4"><summary className="cursor-pointer text-xs text-slate-400">Suggested questions</summary><div className="mt-2 flex flex-wrap gap-1.5">
             {presets.map((p) => (
-              <button key={p} onClick={() => ask(p)}
+              <button key={p} onClick={() => ask(p)} disabled={pending}
                 className="rounded-full border border-slate-700 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-400">
                 {p}
               </button>
             ))}
-          </div>
+          </div></details>
           <div className="mt-2 flex gap-2">
-            <input value={draft} onChange={(e) => setDraft(e.target.value)}
+            <input aria-label={`Ask the AI about ${fridgeId}`} value={draft} onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") ask(draft); }}
               placeholder={`Ask about ${fridgeId}`}
-              className="flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-sm text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-400" />
-            <button onClick={() => ask(draft)} aria-label="Send question"
+              className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-sm text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-400" />
+            <button onClick={() => ask(draft)} aria-label="Send question" disabled={pending || !draft.trim()}
               className="inline-flex items-center rounded-lg border border-slate-700 px-3 py-1.5 text-slate-200 hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-400">
               <Send className="h-4 w-4" />
             </button>
