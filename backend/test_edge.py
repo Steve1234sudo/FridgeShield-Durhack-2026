@@ -1,3 +1,5 @@
+import os
+os.environ["FRIDGE_USE_DATA"] = "0"  # these tests check the simulator; test_data.py covers real data
 import unittest
 
 from backend.edge import EdgeController

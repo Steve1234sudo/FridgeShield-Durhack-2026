@@ -23,7 +23,7 @@ async def eventually(predicate, timeout=12):
 
 class MeshTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.discovery = Discovery()
+        self.discovery = Discovery(topology="ring")  # these tests check ring-specific paths
         self.server = await serve(self.discovery.handler, "127.0.0.1", 0, **SOCKET_OPTIONS)
         self.discovery_url = f"ws://127.0.0.1:{self.server.sockets[0].getsockname()[1]}"
         self.nodes = {}
@@ -139,7 +139,7 @@ class ProcessTest(unittest.IsolatedAsyncioTestCase):
         def spawn(*args):
             processes.append(subprocess.Popen(
                 [sys.executable, "-m", "backend.distributed", *args], cwd=root,
-                env=os.environ.copy(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+                env={**os.environ, "FRIDGE_TOPOLOGY": "ring"}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
 
         try:
             spawn("discovery", "--port", str(ports[0]))

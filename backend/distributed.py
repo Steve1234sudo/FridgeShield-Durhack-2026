@@ -6,6 +6,9 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
+import random
+import time
 import uuid
 from urllib.parse import urlparse
 
@@ -15,6 +18,8 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
+
+from .edge import REMEDIATIONS
 
 LOG = logging.getLogger("fridge.mesh")
 SOCKET_OPTIONS = dict(ping_interval=3, ping_timeout=3, close_timeout=1, max_size=1048576)
@@ -38,19 +43,81 @@ def read(raw):
 class Discovery:
     """Membership only: event traffic never passes through this service.
 
-    Active IDs form a sorted ring. Each node has at most two neighbours.
-    WebSocket ping/pong detects dead members; every change rebuilds the ring.
+    By default fridges form a random network: each newcomer links to 1-3 random fridges
+    that still have room, so every fridge has 1-3 neighbours. When a fridge leaves, any
+    pieces of the network it was holding together are rejoined. Existing links are kept
+    when others join or leave. topology="ring" gives the original sorted ring instead.
+    Set FRIDGE_TOPOLOGY_SEED for the same random network every run (handy for demos).
+    WebSocket ping/pong detects dead members.
     """
+    MAX_DEGREE = 3
 
-    def __init__(self):
+    def __init__(self, topology=None):
         self.members = {}
         self.keys = {}  # Keep departed session keys so old events remain verifiable.
         self.lock = asyncio.Lock()
+        self.topology = topology or os.getenv("FRIDGE_TOPOLOGY", "random")
+        self.edges = set()  # frozenset({a, b}) per neighbour link (random topology)
+        self.rng = random.Random(os.getenv("FRIDGE_TOPOLOGY_SEED"))
+
+    def degree(self, fid):
+        return sum(1 for edge in self.edges if fid in edge)
+
+    def attach(self, fid):
+        """Link a newcomer to 1-3 random fridges that have fewer than 3 neighbours."""
+        others = sorted(m for m in self.members if m != fid)
+        if not others:
+            return
+        room = [m for m in others if self.degree(m) < self.MAX_DEGREE]
+        if not room:
+            # Everyone is full: splice the newcomer into a random link (u-v becomes u-new-v).
+            u, v = self.rng.choice(sorted(tuple(sorted(edge)) for edge in self.edges))
+            self.edges.discard(frozenset((u, v)))
+            self.edges |= {frozenset((fid, u)), frozenset((fid, v))}
+            return
+        for peer in self.rng.sample(room, self.rng.randint(1, min(self.MAX_DEGREE, len(room)))):
+            self.edges.add(frozenset((fid, peer)))
+
+    def detach(self, fid):
+        """Drop a departed fridge's links, then rejoin any pieces it was holding together."""
+        self.edges = {edge for edge in self.edges if fid not in edge}
+        while True:
+            groups = self.components()
+            if len(groups) <= 1:
+                return
+            ends = []
+            for group in groups[:2]:
+                room = [m for m in group if self.degree(m) < self.MAX_DEGREE]
+                ends.append(self.rng.choice(room or [min(group, key=self.degree)]))
+            self.edges.add(frozenset(ends))
+
+    def components(self):
+        unseen, groups = set(self.members), []
+        while unseen:
+            start = min(unseen)
+            group, queue = {start}, [start]
+            while queue:
+                node = queue.pop()
+                for edge in self.edges:
+                    if node in edge:
+                        (other,) = edge - {node}
+                        if other not in group:
+                            group.add(other)
+                            queue.append(other)
+            unseen -= group
+            groups.append(sorted(group))
+        return groups
+
+    def neighbours_of(self, fid, ids):
+        if self.topology == "ring":
+            i = ids.index(fid)
+            return sorted({ids[(i - 1) % len(ids)], ids[(i + 1) % len(ids)]} - {fid})
+        return sorted(other for edge in self.edges if fid in edge for other in edge if other != fid)
 
     async def publish(self):
         ids = sorted(self.members)
-        for i, fid in enumerate(ids):
-            neighbours = sorted({ids[(i - 1) % len(ids)], ids[(i + 1) % len(ids)]} - {fid})
+        for fid in ids:
+            neighbours = self.neighbours_of(fid, ids)
             ws, _ = self.members[fid]
             try:
                 await send(ws, {
@@ -82,6 +149,7 @@ class Discovery:
                     raise ValueError("Session identity changed")
                 self.keys[session] = {"id": fid, "key": key}
                 self.members[fid] = (ws, {"endpoint": endpoint, "session": session, "key": key})
+                self.attach(fid)
                 await self.publish()
             LOG.info("Joined: %s", fid)
             async for raw in ws:
@@ -95,6 +163,7 @@ class Discovery:
             async with self.lock:
                 if fid in self.members and self.members[fid][0] is ws:
                     del self.members[fid]
+                    self.detach(fid)
                     await self.publish()
                     LOG.info("Left: %s", fid)
 
@@ -119,6 +188,12 @@ class Fridge:
         self.changed = asyncio.Event()
         self.rejected = 0
         self.edge = None
+        # When cut off, the fridge refuses peer links and requests arriving over the store
+        # network (from the AI). It keeps running its own safety reflexes and logging events,
+        # which sync to its neighbours when it reconnects.
+        self.isolated = False
+        # Who told us each (non-telemetry) event, and when: proof of direct peer communication.
+        self.arrivals = []
 
     def snapshot(self, compact=False):
         return {
@@ -129,11 +204,12 @@ class Fridge:
             "events": ([e for e in self.events.values() if e["kind"] != "telemetry"][-100:]
                        if compact else list(self.events.values())),
             "event_count": len(self.events), "rejected": self.rejected,
+            "arrivals": self.arrivals[-100:], "isolated": self.isolated,
             "local": self.edge.snapshot() if self.edge else None,
         }
 
     async def emit(self, kind, data):
-        if kind not in {"telemetry", "alert", "rescue_request", "capacity_offer"}:
+        if kind not in {"telemetry", "alert", "rescue_request", "capacity_offer", "ack"}:
             raise ValueError("Unsupported event kind")
         if not isinstance(data, dict):
             raise ValueError("Event data must be an object")
@@ -144,13 +220,14 @@ class Fridge:
         self.ingest(event)
         return event
 
-    def ingest(self, event):
+    def ingest(self, event, via=None):
+        """Store a verified event. `via` is the neighbour that delivered it (None if we created it)."""
         try:
             body = {k: event[k] for k in ("origin", "session", "seq", "kind", "data")}
             identity = self.keys[body["session"]]
             if body["origin"] != identity["id"] or type(body["seq"]) is not int or body["seq"] < 1:
                 raise ValueError("Invalid event identity or sequence")
-            if body["kind"] not in {"telemetry", "alert", "rescue_request", "capacity_offer"} or not isinstance(body["data"], dict):
+            if body["kind"] not in {"telemetry", "alert", "rescue_request", "capacity_offer", "ack"} or not isinstance(body["data"], dict):
                 raise ValueError("Invalid event payload")
             Ed25519PublicKey.from_public_bytes(bytes.fromhex(identity["key"])).verify(
                 bytes.fromhex(event["signature"]), canonical(body))
@@ -162,6 +239,9 @@ class Fridge:
                 return False
             self.events[eid] = event
             self.clock[body["session"]] = max(self.clock.get(body["session"], 0), body["seq"])
+            if body["kind"] != "telemetry":
+                self.arrivals = (self.arrivals + [{"event": eid, "origin": body["origin"], "kind": body["kind"],
+                                                   "via": via, "at": time.time()}])[-200:]
             self.changed.set()
             LOG.info("%s received %s from %s (#%s)", self.fid, body["kind"], body["origin"], body["seq"])
             return True
@@ -243,7 +323,7 @@ class Fridge:
                         if eid not in known:
                             await send(ws, {"type": "event", "event": event})
                 elif msg.get("type") == "event":
-                    self.ingest(msg["event"])
+                    self.ingest(msg["event"], via=peer)
                 else:
                     raise ValueError("Unknown peer message")
         except (ValueError, KeyError, TypeError, InvalidSignature, TimeoutError):
@@ -254,8 +334,25 @@ class Fridge:
             if peer in self.peers and self.peers[peer][0] is ws:
                 del self.peers[peer]
 
+    async def set_isolated(self, isolated):
+        self.isolated = isolated
+        if isolated:
+            for ws, _ in list(self.peers.values()):
+                await ws.close()
+            await self.emit("alert", {"fault": "network",
+                                      "reason": "Cut off from neighbours and the AI; running in safe mode"})
+            if self.edge:
+                self.edge.enter_safe_mode()
+            return {"ok": True, "isolated": True,
+                    "reason": f"{self.fid} is cut off and running in safe mode: remote attacks can't reach it"}
+        await self.emit("alert", {"fault": "network", "resolved": True, "reason": "Back in contact with neighbours and the AI"})
+        return {"ok": True, "isolated": False, "reason": f"{self.fid} is reconnecting to its neighbours"}
+
     async def dial(self, peer):
         while peer in self.neighbours:
+            if self.isolated:
+                await asyncio.sleep(0.5)
+                continue
             try:
                 async with connect(self.members[peer]["endpoint"], proxy=None, **SOCKET_OPTIONS) as ws:
                     await self.peer_session(ws, peer)
@@ -280,17 +377,37 @@ class Fridge:
 
     async def handler(self, ws):
         if ws.request.path == "/peer":
+            if self.isolated:
+                await ws.close(code=1013, reason="Cut off from the network")
+                return
             await self.peer_session(ws)
         elif ws.request.path == "/control":
             try:
                 async for raw in ws:
                     try:
                         msg = read(raw)
-                        if msg.get("type") == "state":
+                        if msg.get("channel") == "network":
+                            # Requests over the store network (from the AI) are refused when cut off,
+                            # and may only ask for the safe fixes the fridge allows remotely.
+                            if self.isolated:
+                                raise ValueError(f"{self.fid} is cut off from the network")
+                            if msg.get("type") == "command" and msg.get("command") not in REMEDIATIONS:
+                                raise ValueError("Only safe fixes can be requested over the network")
+                        if msg.get("type") == "command" and msg.get("command") == "isolate":
+                            await send(ws, {"type": "result", **await self.set_isolated(not self.isolated)})
+                        elif msg.get("type") == "state":
                             await send(ws, {"type": "state", "state": self.snapshot(compact=bool(msg.get("compact")))})
                         elif msg.get("type") == "emit":
                             event = await self.emit(msg["kind"], msg.get("data", {}))
                             await send(ws, {"type": "emitted", "event": event})
+                        elif (msg.get("type") == "command" and self.edge and self.isolated
+                              and self.edge.starts_attack(msg.get("command"))):
+                            # No network, no attack surface: the command never reaches the fridge.
+                            await self.emit("alert", {"fault": "blocked", "command": msg["command"],
+                                                      "reason": "Blocked a remote attack while cut off"})
+                            await send(ws, {"type": "result", "ok": False, "blocked": True,
+                                            "reason": f"Attack blocked: {self.fid} is cut off from the network and "
+                                                      f"running in safe mode, so remote commands can't reach it"})
                         elif msg.get("type") == "command" and self.edge:
                             result = self.edge.command(msg["command"])
                             if result.get("rejected"):

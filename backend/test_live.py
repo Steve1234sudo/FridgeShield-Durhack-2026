@@ -15,7 +15,8 @@ from backend.test_distributed import available_ports
 class LiveTest(unittest.IsolatedAsyncioTestCase):
     async def test_dashboard_stream_controls_and_dynamic_membership(self):
         port, discovery_port = available_ports(2)
-        env = {**os.environ, "FRIDGE_COUNT": "2", "FRIDGE_DISCOVERY_PORT": str(discovery_port)}
+        env = {**os.environ, "FRIDGE_COUNT": "2", "FRIDGE_DISCOVERY_PORT": str(discovery_port),
+               "FRIDGE_TOPOLOGY": "ring"}  # this test expects every fridge to have two links
         root = Path(__file__).resolve().parents[1]
         process = subprocess.Popen([sys.executable, "-m", "uvicorn", "backend.live:app",
                                     "--host", "127.0.0.1", "--port", str(port)],
@@ -61,11 +62,14 @@ class LiveTest(unittest.IsolatedAsyncioTestCase):
             ids.append(added)
             await until(lambda m: m.get("type") == "state" and len(m["nodes"]) == 3
                         and all(len(n["connected"]) == 2 for n in m["nodes"].values()))
-            # Requests reach peers over gossip and healthy peers emit capacity offers.
+            # A warning reaches neighbours directly over peer links, and they reply after
+            # checking their own readings. (Food rescue offers are switched off for now.)
             await send(ws, {"command": "open_door", "id": ids[0]})
             await until(lambda m: m.get("type") == "result")
-            await until(lambda m: m.get("type") == "state"
-                        and any(e["kind"] == "capacity_offer" for e in m["events"]))
+            await until(lambda m: m.get("type") == "state" and any(
+                "reported an open door to" in item["text"]
+                and any(h["direct"] for h in item["heard_by"]) and item["replies"]
+                for item in m["feed"]))
             await send(ws, {"command": "remove", "id": added})
             await until(lambda m: m.get("type") == "result")
             ids.remove(added)

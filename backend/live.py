@@ -20,7 +20,8 @@ from pydantic import BaseModel
 
 from .ai_context import build_packet, mentioned_fridge
 from .ai_incidents import IncidentWatcher
-from .investigator import investigate
+from .feed import active_links, build_feed
+from .investigator import ALLOWED_ACTIONS, investigate
 
 
 def free_port():
@@ -98,14 +99,18 @@ class Gateway:
         nodes = {fid: state for fid, state in results if state is not None}
         edges = sorted({tuple(sorted((fid, peer))) for fid, state in nodes.items()
                         for peer in state["connected"] if peer in nodes})
+        # Every neighbour pair, connected or not, so the dashboard can show cut links.
+        topology = sorted({tuple(sorted((fid, peer))) for fid, state in nodes.items()
+                           for peer in state["neighbours"] if peer in nodes})
         events = {}
         for state in nodes.values():
             for event in state["events"]:
                 events[f"{event['session']}:{event['seq']}"] = event
         return {"type": "state", "timestamp": time.time(), "nodes": nodes,
                 "unreachable": [fid for fid, state in results if state is None],
-                "links": edges, "managed": list(self.children), "events": list(events.values())[-300:],
+                "links": edges, "topology": topology, "managed": list(self.children), "events": list(events.values())[-300:],
                 "source": "Distributed Python nodes · simulated sensors",
+                "feed": build_feed(nodes), "active_links": active_links(nodes),
                 "incidents": watcher.public()}
 
     async def command(self, message):
@@ -115,7 +120,7 @@ class Gateway:
         if command == "remove":
             await self.remove(message["id"])
             return {"ok": True}
-        if command in {"spoof_sensor", "open_door", "wear", "bad_setpoint", "pause"}:
+        if command in {"spoof_sensor", "open_door", "override_target", "isolate", "bad_setpoint", "pause"}:
             return await self.request(message["id"], {"type": "command", "command": command})
         raise ValueError("Unknown command")
 
@@ -128,16 +133,49 @@ gateway = Gateway(int(os.getenv("FRIDGE_DISCOVERY_PORT", "9000")))
 
 
 async def fridge_view(fid):
-    """Ask one fridge, over its own control socket, for everything it knows."""
-    return (await gateway.request(fid, {"type": "state", "compact": True}))["state"]
+    """Ask one fridge, over the store network, for everything it knows.
+
+    A fridge that has been cut off refuses, so the AI genuinely can't see it.
+    """
+    reply = await gateway.request(fid, {"type": "state", "compact": True, "channel": "network"})
+    if reply.get("type") == "error":
+        raise ValueError(reply["message"])
+    return reply["state"]
 
 
 async def fleet_nodes():
     return (await gateway.snapshot())["nodes"]
 
 
-# Explains new problems automatically. Advisory only: it can't send fridges commands.
-watcher = IncidentWatcher(fridge_view)
+async def apply_ai_actions(fid, actions):
+    """Send the AI's requested fixes to the fridge, which checks and carries them out itself.
+
+    Only commands in ALLOWED_ACTIONS are ever sent, and only to the fridge the AI was asked
+    about. Set AI_CAN_ACT=0 in backend/.env to make the AI suggest fixes without applying them.
+    """
+    if os.getenv("AI_CAN_ACT", "1") == "0":
+        return [{**a, "ok": False, "applied": False, "message": "Suggested only (AI_CAN_ACT=0)"} for a in actions]
+    results = []
+    for action in actions:
+        command = action.get("command")
+        if command not in ALLOWED_ACTIONS:
+            results.append({**action, "ok": False, "applied": False, "message": "Not an allowed action"})
+            continue
+        try:
+            reply = await gateway.request(fid, {"type": "command", "command": command, "channel": "network"})
+            ok = reply.get("type") == "result" and bool(reply.get("ok"))
+            results.append({**action, "ok": ok, "applied": ok,
+                            "message": reply.get("message") or reply.get("reason") or ""})
+            if reply.get("type") == "error":
+                results[-1]["message"] += ". Its own safety reflexes still apply."
+        except Exception as exc:
+            results.append({**action, "ok": False, "applied": False,
+                            "message": f"Couldn't reach {fid} ({exc}). Its own safety reflexes still apply."})
+    return results
+
+
+# Explains new problems automatically, and may apply the same safe fixes.
+watcher = IncidentWatcher(fridge_view, act=apply_ai_actions)
 
 
 @asynccontextmanager
@@ -184,8 +222,12 @@ async def ask(req: AskRequest):
     except Exception as exc:
         return {"fridge_id": fid, "diagnosis": None, "invalid_citations": [], "raw": "", "prompt": None,
                 "model": os.getenv("GEMINI_MODEL", ""), "latency_ms": 0,
-                "error": f"Couldn't reach {fid} to ask what it knows ({exc}). The other fridges carry on as normal."}
-    return {"fridge_id": fid, **await investigate(req.question, build_packet(state))}
+                "error": f"Couldn't reach {fid} to ask what it knows ({exc}). It keeps protecting itself, and the other fridges carry on as normal."}
+    result = await investigate(req.question, build_packet(state))
+    actions = (result.get("diagnosis") or {}).get("actions") or []
+    if actions:
+        result["actions_taken"] = await apply_ai_actions(fid, actions)
+    return {"fridge_id": fid, **result}
 
 
 @app.get("/api/incidents")

@@ -79,19 +79,27 @@ ping/pong timeouts (3-second interval and 3-second timeout, plus scheduling and
 reconnect time). A restarted fridge gets a new session ID so its sequence numbers
 cannot collide with its previous incarnation. An active ID cannot register twice.
 
-Neighbours are the predecessor and successor in the sorted ring of active IDs.
-For example, with four fridges:
+Fridges form a random network. Each newcomer links to 1-3 random fridges that
+still have fewer than three neighbours, so every fridge has 1-3 neighbours. For
+example, with five fridges:
 
 ```text
-F1 —— F2
-|      |
-F4 —— F3
+F5 —— F1 —— F2 —— F3
+       |   /       |
+       F4 —————————+
 ```
 
-F1 reaches F3 via gossip through F2 or F4; there is no direct F1–F3 socket.
-One member has no neighbours; two members have one neighbour each; three or
-more have two each. There is no hardcoded fridge count or F1–F8 list. Ring
-neighbours are logical neighbours, not physical floor-plan proximity.
+Fridges that aren't neighbours reach each other via gossip through others; there
+is no direct socket between them. When a fridge leaves, discovery rejoins any
+pieces of the network it was holding together; existing links are kept when
+others join or leave. Set `FRIDGE_TOPOLOGY_SEED` for the same network every run,
+or `FRIDGE_TOPOLOGY=ring` for the original sorted ring. There is no hardcoded
+fridge count. Neighbours are logical neighbours, not physical floor-plan proximity.
+
+A fridge can be **cut off** (dashboard button, or the `isolate` command): it closes
+its peer links, refuses new ones, and refuses requests that arrive over the store
+network (from the AI). It keeps running its local reflexes and logging signed
+events, which sync to its neighbours through anti-entropy when it reconnects.
 
 ## Communication algorithms
 
@@ -109,7 +117,7 @@ neighbours are logical neighbours, not physical floor-plan proximity.
   conflicting signed events with the same session/sequence are logged and rejected
   after the first accepted version. This is detection, not Byzantine consensus or
   automatic quarantine; a valid signature cannot prove a temperature is truthful.
-- **Membership repair:** discovery broadcasts an updated ring on join/leave.
+- **Membership repair:** discovery broadcasts the updated network on join/leave.
   Existing neighbour sockets continue working during a discovery outage, but
   joining and automatic topology repair require discovery to be available.
 

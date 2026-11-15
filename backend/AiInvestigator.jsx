@@ -11,8 +11,9 @@
     includes automatic incident explanations.
   - Questions go to POST /api/ask, which asks that fridge for its own view first.
 
-  The AI only explains and advises. If the backend or Gemini is down, the panel says so
-  and the fridges carry on exactly as before.
+  The AI explains problems and can apply a few safe fixes (close the door, protective
+  mode, request maintenance), which the fridge checks and carries out itself. If the
+  backend or Gemini is down, the fridges carry on and their own reflexes still apply.
 */
 import { useEffect, useRef, useState } from "react";
 import { Bot, Send } from "lucide-react";
@@ -21,6 +22,26 @@ const DEFAULT_API = "http://127.0.0.1:8000";
 const LIKELIHOOD_TONE = { high: "text-red-300", medium: "text-amber-300", low: "text-slate-400" };
 const PRE = "mt-1 max-h-60 overflow-auto whitespace-pre-wrap rounded bg-slate-950 p-2 text-slate-300";
 const clock = (seconds) => new Date(seconds * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+const ACTION_LABEL = {
+  close_door: "Closed the door",
+  protective_mode: "Switched to protective mode",
+  request_maintenance: "Requested maintenance",
+};
+
+function ActionsTaken({ actions }) {
+  if (!actions?.length) return null;
+  return (
+    <ul className="mt-2 space-y-1">
+      {actions.map((a, i) => (
+        <li key={i} className={`rounded-lg border px-3 py-1.5 text-xs ${a.applied ? "border-emerald-700 text-emerald-300" : "border-amber-700 text-amber-300"}`}>
+          <span className="font-medium">{a.applied ? "Done: " : "Not applied: "}{ACTION_LABEL[a.command] || a.command}.</span>{" "}
+          <span className="text-slate-400">{a.applied ? a.reason : a.message}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 function List({ title, items }) {
   if (!items?.length) return null;
@@ -39,6 +60,7 @@ function Answer({ result, showPrompt = true }) {
       {d ? (
         <>
           <p>{d.summary}</p>
+          <ActionsTaken actions={result.actions_taken} />
           {d.hypotheses?.length > 0 && (
             <div className="mt-2">
               <p className="mb-1 text-xs text-slate-400">Possible causes</p>
