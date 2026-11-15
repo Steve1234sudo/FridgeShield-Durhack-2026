@@ -29,7 +29,7 @@ function Relay({ item }) {
   const parts = [];
   if (direct.length) parts.push(`direct in ${direct.map((h) => duration(h.after_ms)).join(", ")}`);
   relayed.forEach((h) => parts.push(`${h.fridge} heard via ${h.via}`));
-  return <p className="mt-0.5 text-xs text-slate-500">{parts.join(" · ")}</p>;
+  return <p className="mt-0.5 text-xs text-slate-400">{parts.join(" · ")}</p>;
 }
 
 export default function NetworkFeed({ feed = [] }) {
@@ -37,7 +37,7 @@ export default function NetworkFeed({ feed = [] }) {
   return (
     <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
       <h2 className="font-semibold">What the fridges are telling each other</h2>
-      <p className="mb-3 text-xs text-slate-500">Sent directly between neighbouring fridges, with no central server.</p>
+      <p className="mb-3 text-xs text-slate-400">Sent directly between neighbouring fridges, with no central server.</p>
       {items.length === 0 ? (
         <p className="text-sm text-slate-400">All quiet. Reports, decisions and advice between fridges will appear here.</p>
       ) : (
@@ -47,7 +47,7 @@ export default function NetworkFeed({ feed = [] }) {
               <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${TONE[item.tone] || TONE.info}`} />
               <div className="min-w-0 flex-1">
                 <p>
-                  <span className="mr-2 tabular-nums text-xs text-slate-500">{timeOf(item.at)}</span>
+                  <span className="mr-2 tabular-nums text-xs text-slate-400">{timeOf(item.at)}</span>
                   <span className="font-medium text-slate-100">{item.text}</span>
                 </p>
                 {item.outcome && <p className="text-slate-300">{item.outcome}</p>}

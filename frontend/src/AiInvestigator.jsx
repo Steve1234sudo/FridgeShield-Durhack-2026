@@ -102,7 +102,7 @@ function Answer({ result }) {
         <p className="mt-2 text-xs text-amber-300">The AI referred to evidence that doesn't exist, so double-check this answer.</p>
       )}
       {result.latency_ms > 0 && (
-        <p className="mt-1 text-xs text-slate-500">{result.model} answered in {(result.latency_ms / 1000).toFixed(1)} s</p>
+        <p className="mt-1 text-xs text-slate-400">{result.model} answered in {(result.latency_ms / 1000).toFixed(1)} s</p>
       )}
     </div>
   );
@@ -128,7 +128,7 @@ export default function AiInvestigator({ fridgeId, incidents = [], apiUrl = DEFA
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
   const [online, setOnline] = useState(null); // null = checking, false = offline, string = model name
-  const endRef = useRef(null);
+  const listRef = useRef(null); // the scrollable chat box
 
   useEffect(() => {
     fetch(`${apiUrl}/health`).then((r) => r.json()).then((h) => setOnline(h.model)).catch(() => setOnline(false));
@@ -136,7 +136,12 @@ export default function AiInvestigator({ fridgeId, incidents = [], apiUrl = DEFA
 
   const thread = threads[fridgeId] || [];
   const incident = [...(incidents || [])].reverse().find((i) => i.fridge_id === fridgeId);
-  useEffect(() => { endRef.current?.scrollIntoView({ block: "nearest" }); }, [thread.length, pending]);
+  // Keep the newest message in view by scrolling the chat box only. (scrollIntoView would also
+  // scroll the whole page, which jumped the dashboard down when switching between fridges.)
+  useEffect(() => {
+    const box = listRef.current;
+    if (box) box.scrollTop = box.scrollHeight;
+  }, [thread.length, pending, fridgeId]);
 
   const add = (id, message) => setThreads((t) => ({ ...t, [id]: [...(t[id] || []), message] }));
 
@@ -176,7 +181,7 @@ export default function AiInvestigator({ fridgeId, incidents = [], apiUrl = DEFA
         <h2 className="font-semibold">AI investigator{fridgeId ? `: ${fridgeId}` : ""}</h2>
         <div className="ml-auto"><IncidentReport fridgeId={fridgeId} apiUrl={apiUrl} /></div>
       </div>
-      <p className={`mb-3 text-xs ${online ? "text-emerald-400" : "text-slate-500"}`}>{status}</p>
+      <p className={`mb-3 text-xs ${online ? "text-emerald-400" : "text-slate-400"}`}>{status}</p>
 
       {!fridgeId ? (
         <p className="text-sm text-slate-400">Select a fridge to ask about it.</p>
@@ -184,7 +189,7 @@ export default function AiInvestigator({ fridgeId, incidents = [], apiUrl = DEFA
         <>
           {incident && <IncidentCard incident={incident} />}
 
-          <div className="max-h-96 space-y-3 overflow-y-auto pr-1">
+          <div ref={listRef} className="max-h-96 space-y-3 overflow-y-auto pr-1">
             {thread.length === 0 && !incident && (
               <p className="text-sm text-slate-400">Ask about {fridgeId}. The AI sees what {fridgeId} itself knows.</p>
             )}
@@ -193,13 +198,12 @@ export default function AiInvestigator({ fridgeId, incidents = [], apiUrl = DEFA
             ) : (
               <div key={i}>
                 {m.result.fridge_id && m.result.fridge_id !== fridgeId && (
-                  <p className="mb-1 text-xs text-slate-500">Answered from {m.result.fridge_id}'s point of view</p>
+                  <p className="mb-1 text-xs text-slate-400">Answered from {m.result.fridge_id}'s point of view</p>
                 )}
                 <Answer result={m.result} />
               </div>
             ))}
             {pending && <p className="animate-pulse text-sm text-slate-400">Asking {fridgeId} what it knows…</p>}
-            <div ref={endRef} />
           </div>
 
           <div className="mt-3 flex flex-wrap gap-1.5">
@@ -214,7 +218,7 @@ export default function AiInvestigator({ fridgeId, incidents = [], apiUrl = DEFA
             <input value={draft} onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") ask(draft); }}
               placeholder={`Ask about ${fridgeId}`}
-              className="flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-400" />
+              className="flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-sm text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-400" />
             <button onClick={() => ask(draft)} aria-label="Send question"
               className="inline-flex items-center rounded-lg border border-slate-700 px-3 py-1.5 text-slate-200 hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-400">
               <Send className="h-4 w-4" />

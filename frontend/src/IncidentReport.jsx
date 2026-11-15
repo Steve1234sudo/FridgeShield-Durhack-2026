@@ -25,7 +25,7 @@ export function ReportView({ report }) {
   const t = facts.temperature;
   return (
     <div className="text-sm leading-relaxed text-slate-300">
-      <p className="text-xs text-slate-500">
+      <p className="text-xs text-slate-400">
         Generated {clock(report.generated_at)} · Data: {facts.data_source}
       </p>
       {writing && <Section title="Summary"><p>{writing.summary}</p></Section>}
@@ -35,7 +35,7 @@ export function ReportView({ report }) {
             <tbody>
               {facts.timeline.map((e, i) => (
                 <tr key={i} className="border-t border-slate-800 align-top">
-                  <td className="w-24 py-1.5 pr-3 tabular-nums text-slate-500">{clock(e.at)}</td>
+                  <td className="w-24 py-1.5 pr-3 tabular-nums text-slate-400">{clock(e.at)}</td>
                   <td className="py-1.5">{e.what}</td>
                 </tr>
               ))}
