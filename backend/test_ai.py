@@ -207,6 +207,40 @@ class DelayedFixTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("No longer needed", incident["actions_taken"][0]["message"])
 
 
+class ReportTest(unittest.TestCase):
+    def test_tracks_peak_and_time_above_limit_but_not_during_defrost(self):
+        from backend.report import FridgeHistory
+        h = FridgeHistory()
+        reading = lambda temp, defrost=False: {"F1": {"local": {"estimate": temp, "safe_target": 0, "defrost": defrost}}}
+        h.observe(reading(1), now=0)
+        h.observe(reading(7), now=3)       # above the 5°C limit: 3 s counted
+        h.observe(reading(9, True), now=6)  # defrost: not counted
+        h.observe(reading(2), now=9)
+        s = h.stats["F1"]
+        self.assertEqual((s["peak_c"], s["peak_at"], s["above_limit_s"], s["limit_c"]), (9, 6, 3, 5))
+
+    def test_report_has_the_exact_facts_and_the_written_parts(self):
+        from backend.report import gather, markdown
+        node = {"local": {"reported": 2.0, "estimate": 2.1, "target": 0, "safe_target": 0, "security": "normal",
+                          "data_file": "fridge_data_013.csv", "spoofed": True, "actual": 9.9}}
+        feed = [{"fridge": "F2", "at": 100, "text": "F2 warned F1 that its target temperature was changed to 9°C.",
+                 "outcome": "F1 checked its own target: unchanged."}]
+        incidents = [{"fridge_id": "F2", "concern": "target changed to 9°C", "created_at": 103, "resolved_at": 112,
+                      "diagnosis": {"summary": "Target raised."},
+                      "actions_taken": [{"command": "restore_target", "applied": True, "applies_at": 111, "reason": "Unsafe target"}]}]
+        facts = gather("F2", node, feed, incidents, {"peak_c": 6.4, "peak_at": 110, "above_limit_s": 8, "limit_c": 5,
+                                                     "first_seen": 0, "last_seen": 120})
+        self.assertEqual([t["at"] for t in facts["timeline"]], [100, 103, 111, 112])
+        self.assertNotIn("spoofed", json.dumps(facts))  # no simulator ground truth in reports
+        self.assertNotIn("9.9", json.dumps(facts))
+        writing = {"summary": "S.", "likely_cause": "C.", "impact": "I.", "recommendations": ["R"], "open_questions": []}
+        text = markdown(facts, writing, 120, "abc123")
+        for part in ("# Incident report: F2", "## Summary", "AI restored the safe target temperature", "Peak 6.4°C",
+                     "Time above the limit: 8 seconds", "## Recommendations"):
+            self.assertIn(part, text)
+        self.assertIn("recorded facts only", markdown(facts, None, 120, "abc123"))
+
+
 class TopologyTest(unittest.TestCase):
     def test_random_network_keeps_every_fridge_at_1_to_3_neighbours_and_connected(self):
         for seed in range(200):

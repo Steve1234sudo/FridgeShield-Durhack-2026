@@ -17,6 +17,7 @@
 */
 import { useEffect, useRef, useState } from "react";
 import { Bot, Send } from "lucide-react";
+import IncidentReport from "./IncidentReport";
 
 // Same address as the dashboard: Vite's proxy forwards /api and /health to the backend.
 const DEFAULT_API = (import.meta.env.VITE_BACKEND_HTTP || "").replace(/\/$/, "");
@@ -173,6 +174,7 @@ export default function AiInvestigator({ fridgeId, incidents = [], apiUrl = DEFA
       <div className="mb-1 flex items-center gap-2">
         <Bot className="h-5 w-5 text-sky-400" />
         <h2 className="font-semibold">AI investigator{fridgeId ? `: ${fridgeId}` : ""}</h2>
+        <div className="ml-auto"><IncidentReport fridgeId={fridgeId} apiUrl={apiUrl} /></div>
       </div>
       <p className={`mb-3 text-xs ${online ? "text-emerald-400" : "text-slate-500"}`}>{status}</p>
 

@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from .ai_context import build_packet, mentioned_fridge
 from .ai_incidents import IncidentWatcher
 from .feed import active_links, build_feed
+from .report import FridgeHistory, gather, markdown, write_up
 from .investigator import ALLOWED_ACTIONS, investigate
 
 
@@ -148,8 +149,14 @@ async def fridge_view(fid):
     return reply["state"]
 
 
+# Each fridge's peak temperature and time above its limit, for incident reports.
+history = FridgeHistory()
+
+
 async def fleet_nodes():
-    return (await gateway.snapshot())["nodes"]
+    nodes = (await gateway.snapshot())["nodes"]
+    history.observe(nodes)
+    return nodes
 
 
 async def apply_ai_actions(fid, actions):
@@ -233,6 +240,26 @@ async def ask(req: AskRequest):
     if actions:
         result["actions_taken"] = await apply_ai_actions(fid, actions)
     return {"fridge_id": fid, **result}
+
+
+class ReportRequest(BaseModel):
+    fridge_id: str
+
+
+@app.post("/api/report")
+async def report(req: ReportRequest):
+    """An incident report for one fridge, on demand: exact facts plus an AI-written summary."""
+    snapshot = await gateway.snapshot()
+    node = snapshot["nodes"].get(req.fridge_id)
+    if not node:
+        return {"fridge_id": req.fridge_id, "error": f"{req.fridge_id} isn't in the network", "markdown": ""}
+    facts = gather(req.fridge_id, node, build_feed(snapshot["nodes"], limit=200), watcher.incidents,
+                   history.stats.get(req.fridge_id, {}))
+    writing, error = await write_up(facts)
+    generated_at = time.time()
+    return {"fridge_id": req.fridge_id, "generated_at": generated_at, "facts": facts, "writing": writing,
+            "error": error, "model": os.getenv("GEMINI_MODEL", ""),
+            "markdown": markdown(facts, writing, generated_at, SERVER_ID)}
 
 
 @app.get("/api/incidents")
