@@ -4,6 +4,7 @@ import { ShieldCheck, Plus, Trash2, Zap, DoorOpen, Thermometer, Unplug, Plug, Pa
 import AiInvestigator from "./AiInvestigator";
 import NetworkFeed from "./NetworkFeed";
 import { startSoundscape, stopSoundscape, updateSoundscape } from "./soundscape";
+import { arrangeFridges } from "./networkLayout";
 
 const button = "inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40";
 const panel = "min-w-0 rounded-xl bg-slate-900 p-4 sm:p-5";
@@ -135,12 +136,16 @@ export default function LiveDashboard() {
   const chosen = data?.nodes[selected] || nodes[0];
   const local = chosen?.local;
   const ids = nodes.map((n) => n.id);
-  const radius = Math.max(120, nodes.length * 15);
-  const width = radius * 2 + 150;
-  const positions = Object.fromEntries(ids.map((id, i) => {
-    const angle = i * 2 * Math.PI / ids.length - Math.PI / 2;
-    return [id, { x: width / 2 + radius * Math.cos(angle), y: width / 2 + radius * Math.sin(angle) }];
-  }));
+  const membership = JSON.stringify([...ids].sort());
+  const [layout, setLayout] = useState(() => ({ ...arrangeFridges([]), membership: "[]", serverId }));
+  // Adjust only on membership changes, before React commits the new graph. This avoids
+  // a frame with missing coordinates and keeps existing fridges anchored when adding one.
+  let graph = layout;
+  if (layout.membership !== membership || layout.serverId !== serverId) {
+    graph = { ...arrangeFridges(ids, layout.serverId === serverId ? layout : undefined), membership, serverId };
+    setLayout(graph);
+  }
+  const { positions, width, height } = graph;
   const online = status === "connected";
   // Messages delivered between neighbours in the last moment: light up the link and show a moving dot.
   const flows = Object.values(Object.fromEntries((data?.active_links || [])
@@ -169,7 +174,7 @@ export default function LiveDashboard() {
         <section className={panel}>
           <h2 className="text-lg font-medium">Store network</h2>
           <p className="text-sm text-slate-400">Click a fridge to inspect it.</p>
-          {nodes.length ? <svg className="h-80 w-full sm:h-96" viewBox={`0 0 ${width} ${width}`} role="img" aria-label="Live fridge network">
+          {nodes.length ? <svg className="h-80 w-full sm:h-96" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Live fridge network">
             {(data.topology || data.links || []).filter(([a, b]) => positions[a] && positions[b]).map(([a, b]) => {
               const up = liveLinks.has(linkKey(a, b)), talking = busyLinks.has(linkKey(a, b));
               return <line key={`${a}-${b}`} x1={positions[a].x} y1={positions[a].y} x2={positions[b].x} y2={positions[b].y}
